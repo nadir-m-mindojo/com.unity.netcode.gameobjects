@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -653,7 +654,24 @@ namespace Unity.Netcode
             {
                 return "No Scene";
             }
-            return GetSceneNameFromPath(ScenePathFromHash(sceneHash));
+
+            try
+            {
+                return GetSceneNameFromPath(ScenePathFromHash(sceneHash));
+            }
+            catch (Exception e)
+            {
+                for (int i = 0; i < SceneManager.sceneCount; i++)
+                {
+                    var scene = SceneManager.GetSceneAt(i);
+                    if (SceneHashFromNameOrPath(scene.path) == sceneHash)
+                    {
+                        return GetSceneNameFromPath(scene.path);
+                    }
+                }
+            }
+
+            throw new Exception($"Couldn find scene with hash {sceneHash}");
         }
 
         /// <summary>
@@ -678,7 +696,11 @@ namespace Unity.Netcode
         internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
         {
             var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
-            if (buildIndex >= 0)
+            string assetBundleName = "";
+#if UNITY_EDITOR
+            assetBundleName = UnityEditor.AssetDatabase.GetImplicitAssetBundleName(sceneNameOrPath);
+#endif
+            if (buildIndex >= 0 && string.IsNullOrEmpty(assetBundleName))
             {
                 if (BuildIndexToHash.ContainsKey(buildIndex))
                 {
@@ -691,7 +713,7 @@ namespace Unity.Netcode
             }
             else
             {
-                throw new Exception($"Scene '{sceneNameOrPath}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
+                return GetSceneNameFromPath(sceneNameOrPath).Hash32();
             }
         }
 
@@ -1836,13 +1858,14 @@ namespace Unity.Netcode
             }
 
             var sceneLoad = (AsyncOperation)null;
-
-            // Determines if the client has the scene to be loaded already loaded, if so will return true and the client will skip loading this scene
-            // For ClientSynchronizationMode LoadSceneMode.Single, we pass in whether the scene being loaded is the first/primary active scene and if it is already loaded
-            // it should pass through to post load processing (ClientLoadedSynchronization).
-            // For ClientSynchronizationMode LoadSceneMode.Additive, if the scene is already loaded or the active scene is the scene to be loaded (does not require it to
-            // be the initial primary scene) then go ahead and pass through to post load processing (ClientLoadedSynchronization).
             var shouldPassThrough = SceneManagerHandler.ClientShouldPassThrough(sceneName, sceneHash == sceneEventData.SceneHash, ClientSynchronizationMode, NetworkManager);
+            // Check to see if the client already has loaded the scene to be loaded
+            if (sceneName == activeScene.name || IsSceneLoaded(sceneName))
+            {
+                // If the client is already in the same scene, then pass through and
+                // don't try to reload it.
+                shouldPassThrough = true;
+            }
 
             if (!shouldPassThrough)
             {
@@ -1871,6 +1894,20 @@ namespace Unity.Netcode
                 // If so, then pass through
                 ClientLoadedSynchronization(sceneEventId);
             }
+        }
+
+        private bool IsSceneLoaded(string sceneName)
+        {
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var scene = SceneManager.GetSceneAt(i);
+                if (scene.name == sceneName)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
